@@ -1,0 +1,616 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  The template creates 4 VPC make sure you have the limits to support it.
+  SpokeVPC1 -> 1 public subnet for jumpbox and 1 Private subnet to test
+  Centralized Inspection. AZ1 SpokeVPC2 -> 1 private subnet to test E-W traffic
+  between VPCs. AZ1 ANFSubnet -> 1 subnet for TGW Attachment and 1 subnet for
+  the VPCE or ANF endpoint. AZ2 EgressVPC -> 1 subnet for TGW Attachment and 1
+  subnet for the NAT. AZ3 SecurityGroup -> For Jumpbox TransitGateway +
+  TransitGatewayAttachment + TransitGatewayRouteTable + TransitGatewayRoutes
+  needed. It also creates ANF and updates all the routes. Once this template 
+  make sure you edit the TGW subnet we create with VpcEndpointId
+Parameters:
+  SshAccessCidr:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+    Description: The CIDR IP range that is permitted to SSH to bastion instance. Note - a value of 0.0.0.0/0 will allow access from ANY IP address.
+    Type: String
+    Default: 0.0.0.0/0
+Resources:
+  EgressVPC:
+    Type: 'AWS::EC2::VPC'
+    # Metadata:
+    #   cfn_nag:
+    #     rules_to_suppress:
+    #       - id: W60
+    #         reason: "This is for demo purpose and vpc flow logs are not enabled for controlling cost"
+    Properties:
+      CidrBlock: 11.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: Egress-VPC
+  PublicEgressVpcSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref EgressVPC
+      CidrBlock: 11.0.0.0/24
+      AvailabilityZone: !Select 
+        - 2
+        - !GetAZs ''
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Egress-Public-Subnet-AZ3
+  PrivateEgressSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref EgressVPC
+      CidrBlock: 11.0.3.0/24
+      AvailabilityZone: !Select 
+        - 2
+        - !GetAZs ''
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Egress-Private-Subnet-AZ3
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: EgressVPC-IGW
+  AttachIGW:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref EgressVPC
+      InternetGatewayId: !Ref InternetGateway
+  IPAddress:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: AttachIGW
+    Properties:
+      Domain: vpc
+  NATGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt 
+        - IPAddress
+        - AllocationId
+      SubnetId: !Ref PublicEgressVpcSubnet
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: EgressVPC-NATGW
+  PublicEgressRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref EgressVPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: EgressVPC-Public-RT
+  PrivateEgressRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref EgressVPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: EgressVPC-Private-RT
+  PublicEgressVPCRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachIGW
+    Properties:
+      RouteTableId: !Ref PublicEgressRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  SubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicEgressVpcSubnet
+      RouteTableId: !Ref PublicEgressRouteTable
+  PrivateEgressVPCRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachIGW
+    Properties:
+      RouteTableId: !Ref PrivateEgressRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+  PrivateEgressRouteTable1Association:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateEgressSubnet
+      RouteTableId: !Ref PrivateEgressRouteTable
+  Spoke1VPC:
+    Type: 'AWS::EC2::VPC'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "This is for demo purpose and vpc flow logs are not enabled for controlling cost"
+    Properties:
+      CidrBlock: 172.32.0.0/16
+      Tags:
+        - Key: Spoke
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke1-VPC
+  Spoke1PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Spoke1VPC
+      CidrBlock: 172.32.1.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Spoke1
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke1-Private-AZ1
+  Spoke1PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Spoke1VPC
+      CidrBlock: 172.32.2.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke1-Public-AZ1
+  Spoke1PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Spoke1VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke1-PrivateRouteTable
+  Spoke1PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Spoke1VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke1-PublicRoutTable
+  Spoke1PrivateRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref Spoke1PrivateSubnet
+      RouteTableId: !Ref Spoke1PrivateRouteTable
+  Spoke1PublicRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref Spoke1PublicSubnet
+      RouteTableId: !Ref Spoke1PublicRouteTable
+  InternetGateway2:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+  AttachIGWSpoke:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref Spoke1VPC
+      InternetGatewayId: !Ref InternetGateway2
+  Route:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachIGWSpoke
+    Properties:
+      RouteTableId: !Ref Spoke1PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway2
+  Spoke2VPC:
+    Type: 'AWS::EC2::VPC'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "This is for demo purpose and vpc flow logs are not enabled for controlling cost"
+    Properties:
+      CidrBlock: 172.33.0.0/16
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke2-VPC
+  Spoke2PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Spoke2VPC
+      CidrBlock: 172.33.1.0/24
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Spoke1
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke2-Private-Subnet-AZ1
+  Spoke2PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Spoke2VPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Spoke2-PrivateRouteTable
+  Spoke2SubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref Spoke2PrivateSubnet
+      RouteTableId: !Ref Spoke2PrivateRouteTable
+  InspectionVPC:
+    Type: 'AWS::EC2::VPC'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "This is for demo purpose and vpc flow logs are not enabled for controlling cost"
+    Properties:
+      CidrBlock: 12.0.0.0/16
+      Tags:
+        - Key: Spoke
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Inspection-VPC
+  InspectionSubnet1TGW:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref InspectionVPC
+      CidrBlock: 12.0.1.0/24
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs ''
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: TGW-Subnet-AZ2
+  InspectionSubnet2ANF:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref InspectionVPC
+      CidrBlock: 12.0.10.0/24
+      AvailabilityZone: !Select 
+        - 1
+        - !GetAZs ''
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: ANF-Subnet-AZ2
+  InspectionTGWRT:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref InspectionVPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Inspection-TGWRT
+  InspectionANFRT:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref InspectionVPC
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: Inspection-ANFRT
+  TGWRTAssoc:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref InspectionSubnet1TGW
+      RouteTableId: !Ref InspectionTGWRT
+  ANFRTAssoc:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref InspectionSubnet2ANF
+      RouteTableId: !Ref InspectionANFRT
+  InstanceSecurityGroupSpokeVPCA:
+    Type: 'AWS::EC2::SecurityGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: "This is bastion server security group"
+    Properties:
+      GroupDescription: Attached to the jumpbox and the test instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshAccessCidr
+          Description: 'Allow SSH'
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: SpokeVPC1SecurityGroup
+      VpcId: !Ref Spoke1VPC
+  InstanceSecurityGroupSpokeVPCB:
+    Type: 'AWS::EC2::SecurityGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: "This is bastion server security group"
+    Properties:
+      GroupDescription: Attached to the jumpbox and the test instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshAccessCidr
+          Description: 'Allow SSH' 
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackId'
+        - Key: Name
+          Value: SpokeVPC2SecurityGroup
+      VpcId: !Ref Spoke2VPC
+  TransitGateway:
+    Type: 'AWS::EC2::TransitGateway'
+    Properties:
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
+      Description: A transit gateway to support a single egress subnet
+      Tags:
+        - Key: Name
+          Value: TGW-VantaCompletetemplate
+  EgressVpcAttachment:
+    Type: 'AWS::EC2::TransitGatewayAttachment'
+    Properties:
+      SubnetIds:
+        - !Ref PrivateEgressSubnet
+      Tags:
+        - Key: Name
+          Value: Egress-Attachment
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref EgressVPC
+  Spoke1Attachment:
+    Type: 'AWS::EC2::TransitGatewayAttachment'
+    Properties:
+      SubnetIds:
+        - !Ref Spoke1PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: Spoke1-Attachment
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref Spoke1VPC
+  Spoke2Attachment:
+    Type: 'AWS::EC2::TransitGatewayAttachment'
+    Properties:
+      SubnetIds:
+        - !Ref Spoke2PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: Spoke2-Attachment
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref Spoke2VPC
+  InspectionAttachment:
+    Type: 'AWS::EC2::TransitGatewayAttachment'
+    Properties:
+      SubnetIds:
+        - !Ref InspectionSubnet1TGW
+      Tags:
+        - Key: Name
+          Value: Inspection-Attachment
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref InspectionVPC
+  FirewallRT:
+    Type: 'AWS::EC2::TransitGatewayRouteTable'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Firewall-RouteTable
+      TransitGatewayId: !Ref TransitGateway
+  MainRT:
+    Type: 'AWS::EC2::TransitGatewayRouteTable'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Main-RouteTable
+      TransitGatewayId: !Ref TransitGateway
+  MainRTRoute:
+    Type: 'AWS::EC2::TransitGatewayRoute'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayAttachmentId: !Ref InspectionAttachment
+      TransitGatewayRouteTableId: !Ref MainRT
+  FirewallRTRoute1:
+    Type: 'AWS::EC2::TransitGatewayRoute'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayAttachmentId: !Ref EgressVpcAttachment
+      TransitGatewayRouteTableId: !Ref FirewallRT
+  FirewallRTRoute2:
+    Type: 'AWS::EC2::TransitGatewayRoute'
+    Properties:
+      DestinationCidrBlock: 172.32.0.0/16
+      TransitGatewayAttachmentId: !Ref Spoke1Attachment
+      TransitGatewayRouteTableId: !Ref FirewallRT
+  FirewallRTRoute3:
+    Type: 'AWS::EC2::TransitGatewayRoute'
+    Properties:
+      DestinationCidrBlock: 172.33.0.0/16
+      TransitGatewayAttachmentId: !Ref Spoke2Attachment
+      TransitGatewayRouteTableId: !Ref FirewallRT
+  EgressVpcTgwAssociation:
+    Type: 'AWS::EC2::TransitGatewayRouteTableAssociation'
+    Properties:
+      TransitGatewayAttachmentId: !Ref EgressVpcAttachment
+      TransitGatewayRouteTableId: !Ref MainRT
+  InspectionVpcTgwAssociation:
+    Type: 'AWS::EC2::TransitGatewayRouteTableAssociation'
+    Properties:
+      TransitGatewayAttachmentId: !Ref InspectionAttachment
+      TransitGatewayRouteTableId: !Ref FirewallRT
+  SpokeVPCATgwAssociation:
+    Type: 'AWS::EC2::TransitGatewayRouteTableAssociation'
+    Properties:
+      TransitGatewayAttachmentId: !Ref Spoke1Attachment
+      TransitGatewayRouteTableId: !Ref MainRT
+  SpokeVPCBTGWAssociation:
+    Type: 'AWS::EC2::TransitGatewayRouteTableAssociation'
+    Properties:
+      TransitGatewayAttachmentId: !Ref Spoke2Attachment
+      TransitGatewayRouteTableId: !Ref MainRT
+  FirewallPolicy:
+    Type: 'AWS::NetworkFirewall::FirewallPolicy'
+    Properties:
+      FirewallPolicy:
+        StatelessDefaultActions:
+          - 'aws:pass'
+        StatelessFragmentDefaultActions:
+          - 'aws:pass'
+      FirewallPolicyName: TGWTestPolicy
+  Firewall:
+    Type: 'AWS::NetworkFirewall::Firewall'
+    Properties:
+      FirewallName: TGWTestFirewall
+      FirewallPolicyArn: !Ref FirewallPolicy
+      SubnetMappings:
+        - SubnetId: !Ref InspectionSubnet2ANF
+      Tags:
+        - Key: Name
+          Value: Something
+      VpcId: !Ref InspectionVPC
+  SpokeVPCARoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: Spoke1Attachment
+    Properties:
+      RouteTableId: !Ref Spoke1PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+  SpokeVPCBRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: Spoke2Attachment
+    Properties:
+      RouteTableId: !Ref Spoke2PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+  InspectionVPCRoute1:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InspectionAttachment
+    Properties:
+      RouteTableId: !Ref InspectionANFRT
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+  EgressVPCRoute1:
+    Type: 'AWS::EC2::Route'
+    DependsOn: EgressVpcAttachment
+    Properties:
+      RouteTableId: !Ref PublicEgressRouteTable
+      DestinationCidrBlock: 172.32.0.0/15
+      TransitGatewayId: !Ref TransitGateway
+  EgressVPCRoute2:
+    Type: 'AWS::EC2::Route'
+    DependsOn: EgressVpcAttachment
+    Properties:
+      RouteTableId: !Ref PrivateEgressRouteTable
+      DestinationCidrBlock: 172.32.0.0/15
+      TransitGatewayId: !Ref TransitGateway
+
+  LogGroupKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-loggroup
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Join
+                - ''
+                - - !Sub 'arn:${AWS::Partition}:iam::'
+                  - !Ref 'AWS::AccountId'
+                  - ':root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Enable Cloudwatch access
+            Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+
+  FlowlogsIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - vpc-flow-logs.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  FlowlogsRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: vpc-flow-logs
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:CreateLogGroup
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+            Resource: !GetAtt 'LogGroup.Arn'
+      Roles:
+        - !Ref 'FlowlogsIAMRole'
+  
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+      KmsKeyId: !GetAtt LogGroupKey.Arn
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt 'FlowlogsIAMRole.Arn'
+      LogGroupName: !Ref 'LogGroup'
+      ResourceId: !Ref EgressVPC
+      ResourceType: VPC
+      TrafficType: ALL
+      
+Outputs:
+  Name:
+    Value: !Ref AWS::StackName
+  FirewallPolicyArn:
+    Value: !Ref Firewall
