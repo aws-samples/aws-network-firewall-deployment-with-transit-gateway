@@ -520,6 +520,13 @@ Resources:
       RouteTableId: !Ref InspectionANFRT
       DestinationCidrBlock: 0.0.0.0/0
       TransitGatewayId: !Ref TransitGateway
+  InspectionVPCRoute2:
+    Type: 'AWS::EC2::Route'
+    DependsOn: Firewall
+    Properties:
+      RouteTableId: !Ref InspectionTGWRT
+      DestinationCidrBlock: 0.0.0.0/0
+      VpcEndpointId: !Select [1, !Split [":", !Select [0, !GetAtt Firewall.EndpointIds]]]
   EgressVPCRoute1:
     Type: 'AWS::EC2::Route'
     DependsOn: EgressVpcAttachment
