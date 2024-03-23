@@ -336,10 +336,6 @@ Resources:
           ToPort: 22
           CidrIp: !Ref SshAccessCidr
           Description: 'Allow SSH'
-      SecurityGroupEgress:
-        - Description: Allow all outbound traffic
-          IpProtocol: tcp
-          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
@@ -361,10 +357,6 @@ Resources:
           ToPort: 22
           CidrIp: !Ref SshAccessCidr
           Description: 'Allow SSH' 
-      SecurityGroupEgress:
-        - Description: Allow all outbound traffic
-          IpProtocol: tcp
-          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Application
           Value: !Ref 'AWS::StackId'
